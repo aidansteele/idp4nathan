@@ -1,0 +1,77 @@
+Transform:
+  - AWS::LanguageExtensions
+  - AWS::Serverless-2016-10-31
+
+Resources:
+  IdpFunction:
+    Type: AWS::Serverless::Function
+    Metadata:
+      BuildMethod: go1.x
+    Properties:
+      CodeUri: ./idp
+      Timeout: 10
+      Architectures: [ arm64 ]
+      AutoPublishAlias: live
+      Runtime: provided.al2
+      Handler: bootstrap
+      Environment:
+        Variables:
+          KEY_ID: !GetAtt RsaKey.Arn
+      FunctionUrlConfig:
+        InvokeMode: RESPONSE_STREAM
+        AuthType: NONE
+      Policies:
+        - Statement:
+            - Effect: Allow
+              Action:
+                - kms:Sign
+                - kms:GetPublicKey
+              Resource: !GetAtt RsaKey.Arn
+
+  RsaKey:
+    Type: AWS::KMS::Key
+    Properties:
+      Description: idp4nathan rsa signer
+      KeySpec: RSA_2048
+      KeyUsage: SIGN_VERIFY
+      KeyPolicy:
+        Version: "2012-10-17"
+        Id: key-policy
+        Statement:
+          - Sid: AllowIAM
+            Effect: Allow
+            Action: kms:*
+            Resource: "*"
+            Principal:
+              AWS: !Sub arn:aws:iam::${AWS::AccountId}:root
+
+  IdentityBearer:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Principal:
+              AWS: !Ref AWS::AccountId
+            Action:
+              - sts:AssumeRole
+              - sts:SetContext
+      Policies:
+        - PolicyName: AllowS3DataAccess
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              - Effect: Allow
+                Action: s3:GetDataAccess
+                Resource: "*"
+
+Outputs:
+  IdpFunction:
+    Value: !Ref IdpFunction.Version
+  Issuer:
+    Value: !GetAtt IdpFunctionUrl.FunctionUrl
+  RsaKey:
+    Value: !GetAtt RsaKey.Arn
+  IdentityBearer:
+    Value: !GetAtt IdentityBearer.Arn
