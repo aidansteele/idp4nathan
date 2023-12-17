@@ -1,0 +1,10 @@
+{
+    "issuer": "https://example.lambda-url.region.on.aws",
+    "keyId": "arn:aws:kms:region:account-id:key/key-id",
+    "audience": "AUDIENCERANDOM3TRINGG03SH3RE",
+    "appArn": "arn:aws:sso::account-id:application/ssoins-example/apl-example",
+    "identityBearerRoleArn": "arn:aws:iam::account-id:role/role-name",
+    "userEmail": "user@example.com",
+    "accountId": "123456789012",
+    "target": "s3://example-bucket/path/to/resource"
+}

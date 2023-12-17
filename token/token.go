@@ -6,7 +6,11 @@ import (
 	"crypto/rand"
 	"crypto/sha256"
 	"encoding/hex"
+	"encoding/json"
 	"fmt"
+	"os"
+	"time"
+
 	"github.com/aidansteele/idp4nathan/kmssigner"
 	"github.com/aws/aws-sdk-go-v2/aws"
 	"github.com/aws/aws-sdk-go-v2/config"
@@ -18,25 +22,39 @@ import (
 	"github.com/aws/aws-sdk-go-v2/service/sts"
 	"github.com/aws/aws-sdk-go-v2/service/sts/types"
 	"github.com/golang-jwt/jwt/v5"
-	"time"
 )
 
+type Config struct {
+	Issuer                string `json:"issuer"`
+	KeyId                 string `json:"keyId"`
+	Audience              string `json:"audience"`
+	AppArn                string `json:"appArn"`
+	IdentityBearerRoleArn string `json:"identityBearerRoleArn"`
+	UserEmail             string `json:"userEmail"`
+	AccountId             string `json:"accountId"`
+	Target                string `json:"target"`
+}
+
 func main() {
-	issuer := ""                // issuer base url (with https:// prefix, without trailing slash suffix) goes here
-	keyId := ""                 // kms key arn goes here
-	audience := ""              // audience (as defined in aws iam identity center)
-	appArn := ""                // app arn (looks like arn:aws:sso::096661570446:application/ssoins-8259f0307527d298/apl-26da2b83fa412b6e)
-	identityBearerRoleArn := "" // identity bearer, i.e. the one from the cfn template
-	userEmail := ""             // user email goes here
-
-	ctx := context.Background()
-
-	cfg, err := config.LoadDefaultConfig(ctx)
+	configFile, err := os.ReadFile("config.json")
 	if err != nil {
 		panic(err)
 	}
 
-	signer, err := kmssigner.New(kms.NewFromConfig(cfg), keyId)
+	var cfg Config
+	err = json.Unmarshal(configFile, &cfg)
+	if err != nil {
+		panic(err)
+	}
+
+	ctx := context.Background()
+
+	awsCfg, err := config.LoadDefaultConfig(ctx)
+	if err != nil {
+		panic(err)
+	}
+
+	signer, err := kmssigner.New(kms.NewFromConfig(awsCfg), cfg.KeyId)
 	if err != nil {
 		panic(err)
 	}
@@ -44,15 +62,15 @@ func main() {
 	method := &kmsSigningMethod{signer}
 
 	outputToken := jwt.NewWithClaims(method, jwt.MapClaims(map[string]interface{}{
-		"iss":   issuer,
-		"email": userEmail, // this assumes you've defined email as the way to identify users in aws iam identity center
-		"aud":   audience,
+		"iss":   cfg.Issuer,
+		"email": cfg.UserEmail,
+		"aud":   cfg.Audience,
 		"jti":   hex.EncodeToString([]byte(fmt.Sprintf("%d", time.Now().UnixNano()))),
 		"iat":   time.Now().Add(-time.Minute).Unix(),
 		"nbf":   time.Now().Add(-time.Minute).Unix(),
 		"exp":   time.Now().Add(time.Hour).Unix(),
 	}))
-	outputToken.Header["kid"] = keyId
+	outputToken.Header["kid"] = cfg.KeyId
 
 	// this creates the oidc jwt we are going to send to aws iic
 	signedJwt, err := outputToken.SignedString(nil)
@@ -60,10 +78,10 @@ func main() {
 		panic(fmt.Sprintf("%+v", err))
 	}
 
-	api := ssooidc.NewFromConfig(cfg)
+	api := ssooidc.NewFromConfig(awsCfg)
 	resp, err := api.CreateTokenWithIAM(ctx, &ssooidc.CreateTokenWithIAMInput{
 		GrantType: aws.String("urn:ietf:params:oauth:grant-type:jwt-bearer"),
-		ClientId:  aws.String(appArn),
+		ClientId:  aws.String(cfg.AppArn),
 		Assertion: aws.String(signedJwt),
 	})
 	if err != nil {
@@ -81,9 +99,9 @@ func main() {
 
 	identityContext := claims["sts:identity_context"].(string)
 
-	stsApi := sts.NewFromConfig(cfg)
+	stsApi := sts.NewFromConfig(awsCfg)
 	stsresp, err := stsApi.AssumeRole(ctx, &sts.AssumeRoleInput{
-		RoleArn:         aws.String(identityBearerRoleArn),
+		RoleArn:         aws.String(cfg.IdentityBearerRoleArn),
 		RoleSessionName: aws.String("my-role-session-with-identity-context"),
 		ProvidedContexts: []types.ProvidedContext{
 			{
@@ -103,16 +121,15 @@ func main() {
 		*c.SessionToken,
 	)
 
-	s3api := s3control.NewFromConfig(cfg, func(options *s3control.Options) {
+	s3api := s3control.NewFromConfig(awsCfg, func(options *s3control.Options) {
 		options.Credentials = creds
-	},
-	)
+	})
 
-	// todo: nathan knows what to do from here
 	_, err = s3api.GetDataAccess(ctx, &s3control.GetDataAccessInput{
-		AccountId:  aws.String("nathan-account-id"),
-		Permission: s3types.PermissionReadwrite,
-		Target:     aws.String("s3://nathan-bucket/*"),
+		AccountId:  aws.String(cfg.AccountId),
+		Permission: s3types.PermissionRead,
+		Target:     aws.String(cfg.Target),
+		Privilege:  s3types.PrivilegeDefault,
 	})
 	if err != nil {
 		panic(fmt.Sprintf("%+v", err))
